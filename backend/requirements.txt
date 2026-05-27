@@ -1,0 +1,31 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.17
+
+# ML
+catboost==1.2.7
+scikit-learn==1.5.2
+numpy==1.26.4
+scipy==1.13.1
+pandas==2.2.3
+shap==0.46.0
+joblib==1.4.2
+
+# Signal processing
+wfdb==4.1.2
+
+# Validation
+pydantic==2.10.3
+
+# Rate limiting
+slowapi==0.1.9
+
+# Utils
+python-dotenv==1.0.1
+openpyxl==3.1.5
+
+# Testing
+pytest==8.3.4
+httpx==0.28.1
+pytest-asyncio==0.24.0
