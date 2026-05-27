@@ -1,0 +1,46 @@
+# Node
+node_modules/
+dist/
+.vite/
+*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# ML artifacts
+backend/ml/models/*.cbm
+backend/ml/models/*.pkl
+backend/data/*.xls
+backend/data/*.csv
+
+# Logs
+*.log
+predictions.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docker
+.dockerignore
