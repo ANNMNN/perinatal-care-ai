@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard'
 import MLModel   from './pages/MLModel'
 import Patients  from './pages/Patients'
 import Reports   from './pages/Reports'
+import Upload    from './pages/Upload'
 
 const PAGE_NAMES = {
   '/analysis':  'Анализ записи КТГ',
@@ -15,6 +16,7 @@ const PAGE_NAMES = {
   '/ml-model':  'ML-модель',
   '/patients':  'Пациентки',
   '/reports':   'Отчёты',
+  '/upload':    'Загрузить данные',
 }
 
 function RouterToast() {
@@ -23,7 +25,7 @@ function RouterToast() {
 
   useEffect(() => {
     const name = PAGE_NAMES[location.pathname]
-    if (name) addToast(`Открыт раздел: ${name}`, 'info', 2500)
+    if (name) addToast(`Открыт раздел: ${name}`, 'info', 2000)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location.pathname])
 
@@ -36,11 +38,12 @@ function AppInner() {
       <RouterToast />
       <Routes>
         <Route path="/"          element={<Navigate to="/dashboard" replace />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/analysis"  element={<Analysis />}  />
-        <Route path="/ml-model"  element={<MLModel />}   />
-        <Route path="/patients"  element={<Patients />}  />
-        <Route path="/reports"   element={<Reports />}   />
+        <Route path="/dashboard" element={<Dashboard />}  />
+        <Route path="/analysis"  element={<Analysis />}   />
+        <Route path="/upload"    element={<Upload />}     />
+        <Route path="/ml-model"  element={<MLModel />}    />
+        <Route path="/patients"  element={<Patients />}   />
+        <Route path="/reports"   element={<Reports />}    />
         <Route path="*"          element={<Navigate to="/dashboard" replace />} />
       </Routes>
     </Layout>

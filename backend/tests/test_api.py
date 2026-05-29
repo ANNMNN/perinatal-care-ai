@@ -69,9 +69,10 @@ class TestFeatureImportance:
         assert "importance" in data
         assert "model_version" in data
 
-    def test_has_21_features(self):
+    def test_has_features(self):
         data = client.get("/features/importance").json()
-        assert len(data["importance"]) == 21
+        # v2 = 31 (21 base + 10 engineered), v1/mock = 21
+        assert len(data["importance"]) >= 21
 
 
 class TestPredict:
@@ -130,9 +131,10 @@ class TestPredict:
         assert r.status_code == 200
 
     def test_too_short_fhr_validation_error(self):
+        # < 10 samples → Pydantic validator raises 422
         payload = {"fhr": [135.0] * 5, "uc": [], "fs": 4}
         r = client.post("/predict", json=payload)
-        assert r.status_code in [422, 200]  # либо валидация, либо warning
+        assert r.status_code == 422
 
 
 class TestBatchPredict:

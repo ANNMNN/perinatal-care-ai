@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutGrid, Activity, Users, FileText, Settings } from 'lucide-react'
+import { LayoutGrid, Activity, Users, FileText, Settings, Upload } from 'lucide-react'
 
 const nav = [
-  { to: '/dashboard', icon: LayoutGrid, label: 'Дашборд'        },
-  { to: '/analysis',  icon: Activity,   label: 'Анализ записи'  },
-  { to: '/patients',  icon: Users,      label: 'Пациентки'      },
-  { to: '/reports',   icon: FileText,   label: 'Отчёты'         },
-  { to: '/ml-model',  icon: Settings,   label: 'ML-модель'      },
+  { to: '/dashboard', icon: LayoutGrid, label: 'Дашборд'           },
+  { to: '/analysis',  icon: Activity,   label: 'Анализ записи'     },
+  { to: '/upload',    icon: Upload,     label: 'Загрузить данные'  },
+  { to: '/patients',  icon: Users,      label: 'Пациентки'         },
+  { to: '/reports',   icon: FileText,   label: 'Отчёты'            },
+  { to: '/ml-model',  icon: Settings,   label: 'ML-модель'         },
 ]
 
 export default function Sidebar() {
@@ -34,7 +35,6 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Footer disclaimer */}
       <div className="mt-auto px-4 py-4 border-t border-border dark:border-gray-700">
         <p className="text-[10.5px] text-muted dark:text-gray-500 leading-relaxed">
           Система носит вспомогательный характер. Все клинические решения принимаются врачом.

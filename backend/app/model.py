@@ -1,5 +1,5 @@
 """
-Инференс CatBoost-модели с SHAP-объяснениями и логированием.
+Инференс: CTG Ensemble + Maternal Health Risk модели.
 """
 from __future__ import annotations
 
@@ -14,63 +14,104 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(__file__).parent.parent / "ml" / "models"
-MODEL_PATH = MODELS_DIR / "catboost_v1.cbm"
-METRICS_PATH = MODELS_DIR / "metrics.json"
 
-CLASS_NAMES = ["Normal", "Suspect", "Pathological"]
-CLASS_IDS = {name: i + 1 for i, name in enumerate(CLASS_NAMES)}
+CLASS_NAMES    = ["Normal", "Suspect", "Pathological"]
+CLASS_IDS      = {n: i + 1 for i, n in enumerate(CLASS_NAMES)}
+MHR_CLASSES    = ["low risk", "mid risk", "high risk"]
 
+# Импорт после from __future__
 from .features import FEATURE_ORDER  # noqa: E402
+
+# Расширенный список (с engineered-признаками)
+ENGINEERED_EXTRA = [
+    "LB_x_ASTV", "AC_x_MSTV", "ASTV_x_ALTV", "Max_Min_ratio",
+    "Width_Var_ratio", "DL_DS_sum", "AC_FM_ratio", "Mode_Mean_diff",
+    "MSTV_sq", "LB_deviation",
+]
+
+MHR_FEATURE_ORDER = ["Age", "SystolicBP", "DiastolicBP", "BS", "BodyTemp", "HeartRate"]
+
+
+def _engineer(features: dict[str, float]) -> np.ndarray:
+    """Добавляет 10 engineered-признаков к базовым 21."""
+    eps = 1e-6
+    base = [features.get(f, 0.0) for f in FEATURE_ORDER]
+    d = {k: v for k, v in zip(FEATURE_ORDER, base)}
+
+    extra = [
+        d["LB"]    * d["ASTV"],
+        d["AC"]    * d["MSTV"],
+        d["ASTV"]  * d["ALTV"],
+        d["Max"]   / (d["Min"] + eps),
+        d["Width"] / (d["Variance"] + eps),
+        d["DL"]    + d["DS"]  + d["DP"],
+        d["AC"]    / (d["FM"] + eps),
+        abs(d["Mode"] - d["Mean"]),
+        d["MSTV"] ** 2,
+        abs(d["LB"] - 135),
+    ]
+    return np.array(base + extra, dtype=float).reshape(1, -1)
 
 
 class CTGModel:
     def __init__(self):
-        self._model = None
-        self._explainer = None
-        self._version = "catboost_v1"
-        self._loaded = False
+        self._ctg_model    = None
+        self._mhr_model    = None
+        self._feature_names: list[str] = FEATURE_ORDER + ENGINEERED_EXTRA
+        self._version      = "ensemble_v2"
+        self._loaded       = False
         self._metrics: dict = {}
 
-    # ------------------------------------------------------------------ #
     def load(self) -> bool:
-        """Загрузка модели из файла. Возвращает True если успешно."""
-        if not MODEL_PATH.exists():
-            logger.warning(
-                "Model file not found at %s. "
-                "Run `python ml/train.py` to train the model first.",
-                MODEL_PATH,
-            )
-            return False
+        import joblib
 
-        try:
-            from catboost import CatBoostClassifier
-            import shap
-
-            self._model = CatBoostClassifier()
-            self._model.load_model(str(MODEL_PATH))
-            self._loaded = True
-            logger.info("Model loaded from %s", MODEL_PATH)
-
-            # SHAP explainer
+        # CTG ensemble
+        ctg_path = MODELS_DIR / "ctg_ensemble_v2.pkl"
+        if ctg_path.exists():
             try:
-                self._explainer = shap.TreeExplainer(self._model)
-                logger.info("SHAP TreeExplainer initialized")
+                self._ctg_model = joblib.load(ctg_path)
+                self._loaded = True
+                logger.info("CTG ensemble loaded from %s", ctg_path)
             except Exception as e:
-                logger.warning("SHAP init failed: %s", e)
-                self._explainer = None
+                logger.error("CTG load failed: %s", e)
+        else:
+            # Fallback: старая catboost-модель
+            old_path = MODELS_DIR / "catboost_v1.cbm"
+            if old_path.exists():
+                try:
+                    from catboost import CatBoostClassifier
+                    m = CatBoostClassifier()
+                    m.load_model(str(old_path))
+                    self._ctg_model = m
+                    self._loaded = True
+                    self._version = "catboost_v1"
+                    logger.info("Fallback: CatBoost v1 loaded")
+                except Exception as e:
+                    logger.error("CatBoost load failed: %s", e)
+            else:
+                logger.warning(
+                    "Нет обученной модели. Запусти: python ml/train_v2.py"
+                )
 
-            # Metrics
-            if METRICS_PATH.exists():
-                with open(METRICS_PATH) as f:
+        # MHR model
+        mhr_path = MODELS_DIR / "maternal_risk_v2.pkl"
+        if mhr_path.exists():
+            try:
+                self._mhr_model = joblib.load(mhr_path)
+                logger.info("MHR model loaded from %s", mhr_path)
+            except Exception as e:
+                logger.warning("MHR load failed: %s", e)
+
+        # Metrics
+        for mf in ["metrics.json"]:
+            mp = MODELS_DIR / mf
+            if mp.exists():
+                with open(mp) as f:
                     self._metrics = json.load(f)
+                break
 
-            return True
+        return self._loaded
 
-        except Exception as e:
-            logger.error("Failed to load model: %s", e)
-            return False
-
-    # ------------------------------------------------------------------ #
     @property
     def is_loaded(self) -> bool:
         return self._loaded
@@ -84,93 +125,113 @@ class CTGModel:
         return self._metrics
 
     # ------------------------------------------------------------------ #
-    def predict(
-        self,
-        features: dict[str, float],
-        warning: Optional[str] = None,
-    ) -> dict:
-        """
-        Прогноз по словарю FIGO-признаков.
-
-        Если модель не загружена — возвращает mock-ответ (для разработки).
-        """
+    def predict_ctg(self, features: dict[str, float],
+                    warning: Optional[str] = None) -> dict:
         t0 = time.perf_counter()
 
         if not self._loaded:
             return self._mock_predict(features, warning, t0)
 
-        # Собираем вектор в нужном порядке
-        x = np.array([[features.get(f, 0.0) for f in FEATURE_ORDER]])
+        try:
+            if self._version.startswith("catboost"):
+                # Старая CatBoost — только 21 признак
+                x = np.array([[features.get(f, 0.0) for f in FEATURE_ORDER]])
+            else:
+                x = _engineer(features)
 
-        proba = self._model.predict_proba(x)[0]
-        class_idx = int(np.argmax(proba))
-        class_label = CLASS_NAMES[class_idx]
+            proba = self._ctg_model.predict_proba(x)[0]
+            idx   = int(np.argmax(proba))
+            label = CLASS_NAMES[idx]
 
-        probabilities = {
-            CLASS_NAMES[i]: round(float(p), 4) for i, p in enumerate(proba)
-        }
+            probabilities = {CLASS_NAMES[i]: round(float(p), 4) for i, p in enumerate(proba)}
+            top_features  = self._get_top_shap(x)
+            inference_ms  = (time.perf_counter() - t0) * 1000
 
-        # SHAP top-3
-        top_features = self._get_top_shap(x)
-
-        inference_ms = (time.perf_counter() - t0) * 1000
+        except Exception as e:
+            logger.error("Predict failed: %s", e)
+            return self._mock_predict(features, f"Ошибка инференса: {e}", t0)
 
         return {
-            "class_label": class_label,
-            "class_id": CLASS_IDS[class_label],
+            "class_label":  label,
+            "class_id":     CLASS_IDS[label],
             "probabilities": probabilities,
-            "features": {k: round(v, 4) for k, v in features.items()},
+            "features":     {k: round(v, 4) for k, v in features.items()},
             "top_features": top_features,
             "model_version": self._version,
             "inference_ms": round(inference_ms, 2),
-            "warning": warning,
+            "warning":      warning,
         }
+
+    def predict_maternal(self, age: float, systolic_bp: float,
+                         diastolic_bp: float, bs: float,
+                         body_temp: float, heart_rate: float) -> dict:
+        if self._mhr_model is None:
+            return {"risk": "unknown", "confidence": 0.0}
+        try:
+            x = np.array([[age, systolic_bp, diastolic_bp, bs, body_temp, heart_rate]])
+            proba = self._mhr_model.predict_proba(x)[0]
+            idx   = int(np.argmax(proba))
+            return {
+                "risk": MHR_CLASSES[idx],
+                "confidence": round(float(proba[idx]), 4),
+                "probabilities": {MHR_CLASSES[i]: round(float(p), 4) for i, p in enumerate(proba)},
+            }
+        except Exception as e:
+            logger.warning("MHR predict failed: %s", e)
+            return {"risk": "unknown", "confidence": 0.0}
 
     # ------------------------------------------------------------------ #
     def _get_top_shap(self, x: np.ndarray, top_n: int = 3) -> list[str]:
-        """Топ-N признаков по абсолютному SHAP-значению."""
-        if self._explainer is None:
-            return FEATURE_ORDER[:top_n]
+        """SHAP только для sklearn/lightgbm совместимых моделей."""
         try:
-            shap_values = self._explainer.shap_values(x)
-            # Для мультикласса: усредняем по классам
-            if isinstance(shap_values, list):
-                abs_mean = np.mean([np.abs(sv) for sv in shap_values], axis=0)[0]
+            import shap
+            # CalibratedClassifierCV → достаём base_estimator
+            base = self._ctg_model
+            if hasattr(base, "estimator"):
+                base = base.estimator
+            elif hasattr(base, "calibrated_classifiers_"):
+                base = base.calibrated_classifiers_[0].estimator
+                if hasattr(base, "estimators_"):
+                    # Stacking → используем первый (lgbm)
+                    base = base.estimators_[0]
+
+            explainer = shap.TreeExplainer(base)
+            sv = explainer.shap_values(x)
+            if isinstance(sv, list):
+                abs_mean = np.mean([np.abs(s) for s in sv], axis=0)[0]
             else:
-                abs_mean = np.abs(shap_values)[0]
+                abs_mean = np.abs(sv)[0]
+
             top_idx = np.argsort(abs_mean)[::-1][:top_n]
-            return [FEATURE_ORDER[i] for i in top_idx]
-        except Exception as e:
-            logger.warning("SHAP computation failed: %s", e)
-            return FEATURE_ORDER[:top_n]
-
-    # ------------------------------------------------------------------ #
-    def get_feature_importance(self) -> dict[str, float]:
-        """Gain-важность признаков (из CatBoost)."""
-        if not self._loaded:
-            # Mock importance
-            mock = [18.4, 15.2, 12.8, 11.3, 9.7, 8.1, 7.6,
-                    5.2, 4.8, 3.6, 2.9, 2.4, 2.0, 1.8, 1.5,
-                    1.2, 1.0, 0.9, 0.8, 0.7, 0.6]
-            return {f: round(v, 2) for f, v in zip(FEATURE_ORDER, mock)}
-        try:
-            importance = self._model.get_feature_importance()
-            return {
-                FEATURE_ORDER[i]: round(float(v), 4)
-                for i, v in enumerate(importance)
-            }
+            return [self._feature_names[i] if i < len(self._feature_names)
+                    else f"feature_{i}" for i in top_idx]
         except Exception:
-            return {}
+            return ["ASTV", "LB", "AC"][:top_n]
 
-    # ------------------------------------------------------------------ #
-    def _mock_predict(
-        self,
-        features: dict[str, float],
-        warning: Optional[str],
-        t0: float,
-    ) -> dict:
-        """Mock-ответ когда модель не обучена (для UI-разработки)."""
-        inference_ms = (time.perf_counter() - t0) * 1000
+    def get_feature_importance(self) -> dict[str, float]:
+        try:
+            base = self._ctg_model
+            if hasattr(base, "calibrated_classifiers_"):
+                base = base.calibrated_classifiers_[0].estimator
+            if hasattr(base, "estimators_"):
+                base = base.estimators_[0]
+            if hasattr(base, "feature_importances_"):
+                fi = base.feature_importances_
+                return dict(sorted(
+                    {self._feature_names[i]: round(float(v), 4)
+                     for i, v in enumerate(fi) if i < len(self._feature_names)}.items(),
+                    key=lambda kv: kv[1], reverse=True,
+                ))
+        except Exception:
+            pass
+        # Mock importance
+        vals = [18.4, 15.2, 12.8, 11.3, 9.7, 8.1, 7.6, 5.2, 4.8, 3.6,
+                2.9, 2.4, 2.0, 1.8, 1.5, 1.2, 1.0, 0.9, 0.8, 0.7, 0.6,
+                0.5, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.08, 0.05]
+        return {f: v for f, v in zip(self._feature_names, vals)}
+
+    def _mock_predict(self, features, warning, t0) -> dict:
+        ms = (time.perf_counter() - t0) * 1000
         return {
             "class_label": "Normal",
             "class_id": 1,
@@ -178,12 +239,11 @@ class CTGModel:
             "features": {k: round(v, 4) for k, v in features.items()},
             "top_features": ["ASTV", "LB", "AC"],
             "model_version": "mock_v0",
-            "inference_ms": round(inference_ms, 2),
-            "warning": warning or "Модель не загружена — используется mock-ответ",
+            "inference_ms": round(ms, 2),
+            "warning": warning or "Модель не загружена (запусти ml/train_v2.py)",
         }
 
 
-# Singleton
 _model_instance: Optional[CTGModel] = None
 
 
