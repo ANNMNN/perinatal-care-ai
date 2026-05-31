@@ -2,7 +2,6 @@
 Тесты FastAPI эндпоинтов: /health, /models, /features/importance, /predict, /predict/batch
 """
 import numpy as np
-import pytest
 import sys
 from pathlib import Path
 from fastapi.testclient import TestClient

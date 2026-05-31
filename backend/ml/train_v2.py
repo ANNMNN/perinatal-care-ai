@@ -475,12 +475,62 @@ def train_maternal_model() -> dict:
 # main
 # ═══════════════════════════════════════════════════════════════════════
 
+def load_doctor_labeled(csv_path: str | None = None) -> tuple[np.ndarray, np.ndarray] | None:
+    """
+    Load doctor-labeled visit data exported from /training-data/export.
+
+    Returns (X, y) arrays compatible with CTG_FEATURES order,
+    or None if the file is missing or empty.
+    """
+    from pathlib import Path
+
+    CLASS_MAP = {"Normal": 0, "Suspect": 1, "Pathological": 2}
+
+    if csv_path is None:
+        default = ROOT / "data" / "labeled_visits.csv"
+        if not default.exists():
+            return None
+        csv_path = str(default)
+
+    path = Path(csv_path)
+    if not path.exists():
+        logger.warning("Doctor-labeled file not found: %s", path)
+        return None
+
+    df = pd.read_csv(path)
+    if "doctor_class" not in df.columns:
+        logger.warning("Column 'doctor_class' missing in %s", path)
+        return None
+
+    valid = df[df["doctor_class"].isin(CLASS_MAP)]
+    if valid.empty:
+        return None
+
+    missing = [c for c in CTG_FEATURES if c not in valid.columns]
+    if missing:
+        logger.warning("Missing feature columns in labeled data: %s", missing)
+        return None
+
+    X = valid[CTG_FEATURES].values.astype(float)
+    y = valid["doctor_class"].map(CLASS_MAP).values.astype(int)
+    logger.info("Doctor-labeled data: %d records loaded", len(y))
+    return X, y
+
+
 def main():
     from ml.dataset_fusion import load_ctg_combined
 
-    # CTG ансамбль
     logger.info("Загрузка CTG данных (UCI + CTU-UHB)...")
     X, y = load_ctg_combined(use_ctu=True)
+
+    # Merge doctor-labeled data if available
+    labeled = load_doctor_labeled()
+    if labeled is not None:
+        X_labeled, y_labeled = labeled
+        X = np.vstack([X, X_labeled])
+        y = np.concatenate([y, y_labeled])
+        logger.info("После подмешивания: %d записей", len(y))
+
     ctg_metrics = train_ctg_model(X, y)
 
     # Maternal Risk

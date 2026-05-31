@@ -7,7 +7,6 @@ DATABASE_URL из .env:
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase

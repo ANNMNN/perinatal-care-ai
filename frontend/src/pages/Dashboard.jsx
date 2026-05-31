@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useApp } from '../context/AppContext'
 import ClassBadge from '../components/ClassBadge'
-import { stats, records } from '../data/dashboard'
+import api from '../api/client'
 
 const statColors = {
   navy:  { bg: 'bg-[#EEF2F9]', text: 'text-navy',      dark: 'dark:bg-blue-950 dark:text-blue-300' },
@@ -18,10 +18,10 @@ function StatCard({ value, label, color, delay }) {
       className={`flex flex-col items-center justify-center rounded-2xl px-6 py-5 flex-1 animate-fade-up ${c.bg} ${c.dark}`}
       style={{ animationDelay: `${delay}ms` }}
     >
-      <span className={`text-[38px] font-800 leading-none ${c.text}`} style={{ fontWeight: 800 }}>
+      <span className={`text-[38px] leading-none ${c.text}`} style={{ fontWeight: 800 }}>
         {value}
       </span>
-      <span className={`text-sm font-500 mt-1 text-center ${c.text} opacity-80`} style={{ fontWeight: 500 }}>
+      <span className={`text-sm mt-1 text-center ${c.text} opacity-80`} style={{ fontWeight: 500 }}>
         {label}
       </span>
     </div>
@@ -40,78 +40,102 @@ function SkeletonRow() {
   )
 }
 
+function formatDate(iso) {
+  if (!iso) return '—'
+  return new Date(iso).toLocaleString('ru-RU', {
+    day: '2-digit', month: '2-digit', year: '2-digit',
+    hour: '2-digit', minute: '2-digit',
+  })
+}
+
 export default function Dashboard() {
   const navigate = useNavigate()
   const { setActivePatient, addToast } = useApp()
+  const [stats, setStats]     = useState(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError]     = useState(null)
 
   useEffect(() => {
-    const t = setTimeout(() => setLoading(false), 650)
-    return () => clearTimeout(t)
+    api.dashboardStats()
+      .then(data => { setStats(data); setLoading(false) })
+      .catch(e  => { setError(e.message); setLoading(false) })
   }, [])
 
-  function handleRowClick(rec) {
+  function handleRowClick(visit) {
     setActivePatient({
-      id:       rec.id,
-      weeks:    rec.weeks,
-      date:     '27.05.2026',
-      time:     rec.time,
-      filename: `ctg_${rec.id.replace('№', '')}_record.dat`,
-      format:   'WFDB',
-      duration: '20 мин',
-      fs:       '4 Гц',
-      samples:  '4 800 отсчётов',
-      cls:      rec.cls,
-      conf:     rec.conf,
-      probabilities: rec.cls === 'Normal'
-        ? { Normal: rec.conf, Suspect: +(1 - rec.conf - 0.01).toFixed(2), Pathological: 0.01 }
-        : rec.cls === 'Suspect'
-        ? { Normal: +(1 - rec.conf - 0.05).toFixed(2), Suspect: rec.conf, Pathological: 0.05 }
-        : { Normal: 0.03, Suspect: +(1 - rec.conf - 0.03).toFixed(2), Pathological: rec.conf },
+      id:           visit.patient_id || '—',
+      weeks:        visit.weeks_gestation ? `${visit.weeks_gestation} нед.` : '—',
+      date:         formatDate(visit.visit_date),
+      time:         '',
+      filename:     visit.input_format || 'api',
+      format:       visit.input_format || 'API',
+      duration:     '—',
+      fs:           '—',
+      samples:      '—',
+      cls:          visit.predicted_class,
+      conf:         Math.max(...Object.values(visit.probabilities || {})),
+      probabilities: visit.probabilities || {},
+      features:     visit.features || {},
+      topFeatures:  visit.shap_top || [],
+      visitId:      visit.id,
     })
-    addToast(`Открыта запись пациентки ${rec.id}`, 'success')
+    addToast(`Открыта запись пациента ${visit.patient_id || '#' + visit.id}`, 'success')
     navigate('/analysis')
   }
 
+  const statCards = stats
+    ? [
+        { value: stats.total_patients,          label: 'Пациентов',         color: 'navy'  },
+        { value: stats.by_class?.Normal ?? 0,   label: 'Норма',             color: 'green' },
+        { value: stats.by_class?.Suspect ?? 0,  label: 'Подозрительные',    color: 'amber' },
+        { value: stats.by_class?.Pathological ?? 0, label: 'Патология',     color: 'red'   },
+      ]
+    : []
+
   return (
     <div>
-      {/* Header */}
       <div className="mb-6 animate-fade-in">
         <h1 className="text-ink dark:text-white" style={{ fontSize: 25, fontWeight: 800 }}>
           Дашборд наблюдений
         </h1>
         <p className="text-muted dark:text-gray-400" style={{ fontSize: 14, fontWeight: 500, marginTop: 3 }}>
-          Смена 27.05.2026 · активных пациенток: 24
+          {stats
+            ? `Всего приёмов: ${stats.total_visits} · сегодня: ${stats.today_visits}`
+            : 'Загрузка...'}
         </p>
       </div>
 
       {/* Stat cards */}
       <div className="flex gap-3.5 mb-6">
-        {stats.map((s, i) => (
-          <StatCard key={s.label} {...s} delay={i * 80} />
-        ))}
+        {loading
+          ? [0, 1, 2, 3].map(i => (
+              <div key={i} className="skeleton rounded-2xl flex-1 h-[88px]" />
+            ))
+          : statCards.map((s, i) => (
+              <StatCard key={s.label} {...s} delay={i * 80} />
+            ))
+        }
       </div>
 
-      {/* Table */}
-      <div
-        className="bg-white dark:bg-gray-800 rounded-2xl border border-border dark:border-gray-700 overflow-hidden animate-fade-up delay-300"
-      >
+      {error && (
+        <div className="mb-4 px-4 py-3 rounded-xl bg-red-bg text-red-dark text-sm border border-red-200">
+          Не удалось загрузить данные: {error}
+        </div>
+      )}
+
+      {/* Recent visits table */}
+      <div className="bg-white dark:bg-gray-800 rounded-2xl border border-border dark:border-gray-700 overflow-hidden animate-fade-up delay-300">
         <div className="px-5 py-4 border-b border-border dark:border-gray-700">
-          <h2 className="text-base font-700 text-ink dark:text-gray-100" style={{ fontWeight: 700 }}>
+          <h2 className="text-base text-ink dark:text-gray-100" style={{ fontWeight: 700 }}>
             Последние записи КТГ
           </h2>
         </div>
-
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
               <tr className="bg-[#F8FAFD] dark:bg-gray-900 text-left">
-                {['Пациентка', 'Срок', 'Время', 'Прогноз', 'Conf.'].map(col => (
-                  <th
-                    key={col}
-                    className="px-4 py-3 text-xs font-600 text-muted dark:text-gray-400 uppercase tracking-wide"
-                    style={{ fontWeight: 600 }}
-                  >
+                {['Пациент', 'Срок', 'Дата/Время', 'Прогноз', 'Conf.'].map(col => (
+                  <th key={col} className="px-4 py-3 text-xs text-muted dark:text-gray-400 uppercase tracking-wide" style={{ fontWeight: 600 }}>
                     {col}
                   </th>
                 ))}
@@ -120,26 +144,43 @@ export default function Dashboard() {
             <tbody>
               {loading
                 ? Array.from({ length: 6 }).map((_, i) => <SkeletonRow key={i} />)
-                : records.map((rec, i) => (
-                  <tr
-                    key={rec.id}
-                    onClick={() => handleRowClick(rec)}
-                    className="border-t border-border dark:border-gray-700 hover:bg-card-bg dark:hover:bg-gray-700 cursor-pointer transition-colors animate-fade-up"
-                    style={{ animationDelay: `${i * 60}ms` }}
-                  >
-                    <td className="px-4 py-3 text-sm font-700 text-navy dark:text-blue-300" style={{ fontWeight: 700 }}>
-                      {rec.id}
-                    </td>
-                    <td className="px-4 py-3 text-sm text-ink dark:text-gray-200">{rec.weeks}</td>
-                    <td className="px-4 py-3 text-sm text-muted dark:text-gray-400">{rec.time}</td>
-                    <td className="px-4 py-3">
-                      <ClassBadge cls={rec.cls} size="sm" />
-                    </td>
-                    <td className="px-4 py-3 text-sm font-600 text-ink dark:text-gray-200" style={{ fontWeight: 600 }}>
-                      {rec.conf.toFixed(2)}
+                : (!stats?.recent_visits?.length)
+                ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted dark:text-gray-500">
+                      Нет записей. Загрузите данные через раздел «Загрузить данные».
                     </td>
                   </tr>
-                ))
+                )
+                : stats.recent_visits.map((v, i) => {
+                  const conf = v.probabilities
+                    ? Math.max(...Object.values(v.probabilities))
+                    : 0
+                  return (
+                    <tr
+                      key={v.id}
+                      onClick={() => handleRowClick(v)}
+                      className="border-t border-border dark:border-gray-700 hover:bg-card-bg dark:hover:bg-gray-700 cursor-pointer transition-colors animate-fade-up"
+                      style={{ animationDelay: `${i * 60}ms` }}
+                    >
+                      <td className="px-4 py-3 text-sm text-navy dark:text-blue-300" style={{ fontWeight: 700 }}>
+                        {v.patient_id || <span className="text-muted">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-ink dark:text-gray-200">
+                        {v.weeks_gestation ? `${v.weeks_gestation} нед.` : '—'}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-muted dark:text-gray-400">
+                        {formatDate(v.visit_date)}
+                      </td>
+                      <td className="px-4 py-3">
+                        <ClassBadge cls={v.predicted_class} size="sm" />
+                      </td>
+                      <td className="px-4 py-3 text-sm text-ink dark:text-gray-200" style={{ fontWeight: 600 }}>
+                        {conf.toFixed(2)}
+                      </td>
+                    </tr>
+                  )
+                })
               }
             </tbody>
           </table>

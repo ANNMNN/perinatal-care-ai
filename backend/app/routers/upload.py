@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import io
-import json
 import logging
 import os
 import time
@@ -28,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.features import extract_figo_features, FEATURE_ORDER
 from app.model import get_model
-from app.models_db import Patient, Prediction, UploadedFile
+from app.models_db import Patient, Visit, UploadedFile
 from app.pipeline import CTGPipeline
 
 logger = logging.getLogger(__name__)
@@ -78,10 +77,8 @@ def _save_file_record(db: Session, original_name: str, saved_path: Path,
     return rec
 
 
-def _save_prediction(db: Session, result: dict,
-                     patient_id: Optional[str], source: str) -> Prediction:
-    """Сохраняет предсказание в БД."""
-    # Убедимся что пациент существует
+def _save_visit(db: Session, result: dict,
+                patient_id: Optional[str], source: str) -> Visit:
     if patient_id:
         pat = db.query(Patient).filter(Patient.patient_id == patient_id).first()
         if not pat:
@@ -89,28 +86,31 @@ def _save_prediction(db: Session, result: dict,
             db.add(pat)
             db.flush()
 
-    proba = result.get("probabilities", {})
-    pred = Prediction(
+    mhr_data = None
+    if result.get("maternal_risk"):
+        mhr_data = {
+            "risk":       result.get("maternal_risk"),
+            "confidence": result.get("maternal_confidence"),
+        }
+
+    visit = Visit(
         patient_id=patient_id,
-        class_label=result["class_label"],
+        screening_type="КТГ",
+        input_format=source,
+        predicted_class=result["class_label"],
         class_id=result["class_id"],
-        confidence=max(proba.values()) if proba else 0.0,
-        prob_normal=proba.get("Normal"),
-        prob_suspect=proba.get("Suspect"),
-        prob_pathological=proba.get("Pathological"),
-        maternal_risk=result.get("maternal_risk"),
-        maternal_confidence=result.get("maternal_confidence"),
-        features_json=json.dumps(result.get("features", {})),
-        top_features_json=json.dumps(result.get("top_features", [])),
+        probabilities=result.get("probabilities", {}),
+        features=result.get("features", {}),
+        shap_top=result.get("top_features", []),
+        maternal_risk=mhr_data,
         model_version=result.get("model_version"),
         inference_ms=result.get("inference_ms"),
-        source=source,
         warning=result.get("warning"),
     )
-    db.add(pred)
+    db.add(visit)
     db.commit()
-    db.refresh(pred)
-    return pred
+    db.refresh(visit)
+    return visit
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────
@@ -161,8 +161,8 @@ async def upload_ctg_features(
             warnings_list.append(f"Строка {i}: {warning}")
 
         result = model.predict_ctg(features, warning=warning)
-        pred   = _save_prediction(db, result, patient_id, source="csv_features")
-        result["prediction_id"] = pred.id
+        pred   = _save_visit(db, result, patient_id, source="csv_features")
+        result["visit_id"] = pred.id
         results.append(result)
 
     _save_file_record(db, file.filename or "upload.csv", saved_path,
@@ -191,7 +191,6 @@ async def upload_ctg_signals(
     Минимум 1200 отсчётов (5 мин при 4 Гц).
     """
     saved_path, content = _save_upload(file)
-    t0 = time.perf_counter()
 
     try:
         df = pd.read_csv(io.BytesIO(content))
@@ -223,8 +222,8 @@ async def upload_ctg_signals(
 
     model  = get_model()
     result = model.predict_ctg(features, warning=warning)
-    pred   = _save_prediction(db, result, patient_id, source="csv_signals")
-    result["prediction_id"] = pred.id
+    pred   = _save_visit(db, result, patient_id, source="csv_signals")
+    result["visit_id"] = pred.id
 
     _save_file_record(db, file.filename or "signals.csv", saved_path,
                       "csv_signals", len(content), patient_id, 1)
@@ -243,12 +242,12 @@ async def upload_wfdb(
     Архив ZIP должен содержать: <name>.dat и <name>.hea
     """
     saved_path, content = _save_upload(file)
-    t0 = time.perf_counter()
 
     if not zipfile.is_zipfile(io.BytesIO(content)):
         raise HTTPException(422, "Ожидается ZIP-архив с .dat и .hea файлами")
 
-    import tempfile, wfdb
+    import tempfile
+    import wfdb
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
@@ -285,8 +284,8 @@ async def upload_wfdb(
     features  = extract_figo_features(fhr_clean, uc_clean, fs=record.fs)
     model     = get_model()
     result    = model.predict_ctg(features, warning=warning)
-    pred      = _save_prediction(db, result, patient_id, source="wfdb_upload")
-    result["prediction_id"] = pred.id
+    pred      = _save_visit(db, result, patient_id, source="wfdb_upload")
+    result["visit_id"] = pred.id
 
     _save_file_record(db, file.filename or "record.zip", saved_path,
                       "wfdb", len(content), patient_id, 1)
